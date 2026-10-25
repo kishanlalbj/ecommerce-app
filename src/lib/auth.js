@@ -1,4 +1,6 @@
-import bcrypt from "bcryptjs";
+// Native bcrypt hashes on libuv's thread pool. bcryptjs (pure JS) ran each ~250ms hash on
+// the event loop, stalling every other request on the instance. Hashes are interchangeable.
+import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
 

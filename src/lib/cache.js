@@ -75,10 +75,37 @@ export async function getVersion(name) {
   }
 }
 
+// An express-rate-limit store on this client, so limits hold across every API instance.
+// It fails open like the rest of this file: while Redis is down, requests aren't limited.
+export function rateLimitStore(prefix) {
+  let windowMs;
+  const keyFor = (key) => `${prefix}:${key}`;
+  return {
+    prefix,
+    localKeys: false,
+    init(options) {
+      windowMs = options.windowMs;
+    },
+    async increment(key) {
+      if (!client.isReady) return { totalHits: 0, resetTime: new Date(Date.now() + windowMs) };
+      const k = keyFor(key);
+      // NX: only the first hit in a window starts its countdown
+      const [totalHits, , ttl] = await client.multi().incr(k).pExpire(k, windowMs, "NX").pTTL(k).exec();
+      return { totalHits, resetTime: new Date(Date.now() + ttl) };
+    },
+    async decrement(key) {
+      if (client.isReady) await client.decr(keyFor(key));
+    },
+    async resetKey(key) {
+      if (client.isReady) await client.del(keyFor(key));
+    }
+  };
+}
+
 // Removes keys and bumps versions. A failure here only means data stays stale until its
 // TTL, so it's logged rather than failing a request whose database write already succeeded.
 export async function invalidate({ keys = [], versions = [] }) {
-  if (!client.isReady) return;
+  if (!client.isReady || (!keys.length && !versions.length)) return;
   try {
     const multi = client.multi();
     if (keys.length) multi.del(keys);

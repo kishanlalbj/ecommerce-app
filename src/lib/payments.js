@@ -15,10 +15,10 @@ import { stripe } from "./stripe.js";
 
 // Cancels a pending order and puts its books back. Returns true if this call cancelled it.
 export async function releaseOrder(orderId) {
-  const restocked = await db.transaction((tx) => cancelAndRestock(tx, orderId));
+  const change = await db.transaction((tx) => cancelAndRestock(tx, orderId));
   // After the commit, as in the orders routes
-  if (restocked.length) await invalidateBooks(restocked);
-  return restocked.length > 0;
+  await invalidateBooks(change);
+  return change.bookIds.length > 0;
 }
 
 // Also runs for async_payment_succeeded. Delayed methods (bank debits) complete the session

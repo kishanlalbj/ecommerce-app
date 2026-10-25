@@ -1,5 +1,6 @@
 import express from "express";
 import swaggerUi from "swagger-ui-express";
+import { env } from "./config/env.js";
 import { pool } from "./db/index.js";
 import { openApiSpec } from "./docs/openapi.js";
 import { errorHandler, notFoundHandler } from "./middleware/error-handler.js";
@@ -11,6 +12,7 @@ import { ordersRouter } from "./routes/orders.js";
 import { paymentsRouter } from "./routes/payments.js";
 
 export const app = express();
+app.set("trust proxy", env.TRUST_PROXY);
 app.use(requestLogger);
 // Before express.json(): webhook signatures are checked against the raw body
 app.use("/payments", paymentsRouter);

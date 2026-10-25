@@ -14,9 +14,16 @@ export const bookCacheKeys = {
   listVersion: LIST_VERSION
 };
 
-// Stock or price changed: those books' detail entries and every cached list page
-export const invalidateBooks = (ids) =>
-  invalidate({ keys: ids.map(bookCacheKeys.detail), versions: [LIST_VERSION] });
+// An order changed stock (see NO_STOCK_CHANGE in orders.js). Detail pages show exact stock,
+// so those are always cleared. List pages are cleared only when a book sold out or came
+// back, since that changes which books they show and the sold-out badge. Clearing them on
+// every order would empty the list cache several times a minute under real traffic; their
+// "only N left" counts can instead lag by up to the list TTL. Checkout reads live stock.
+export const invalidateBooks = ({ bookIds, availabilityChanged }) =>
+  invalidate({
+    keys: bookIds.map(bookCacheKeys.detail),
+    versions: availabilityChanged ? [LIST_VERSION] : []
+  });
 
 // A book was added, edited or removed: also the facet counts and price range
 export const invalidateCatalog = (ids = []) =>
