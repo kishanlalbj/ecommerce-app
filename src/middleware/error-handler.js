@@ -36,6 +36,7 @@ export function errorHandler(err, req, res, next) {
     return res.status(status).json({ error: message });
   }
 
-  console.error(err);
+  // pino-http attaches this to the request completion log
+  res.err = err;
   res.status(500).json({ error: "Internal server error" });
 }

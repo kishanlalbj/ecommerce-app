@@ -9,7 +9,7 @@ const actionClassNames = {
 }
 
 function Hero({ content = siteConfig.hero }) {
-  const { title, description, image, actions } = content
+  const { title, description, image, actions = [] } = content
 
   return (
     <section className="relative isolate overflow-hidden">
@@ -27,21 +27,23 @@ function Hero({ content = siteConfig.hero }) {
           {title}
         </h1>
         <p className="max-w-xl text-lg text-white/80">{description}</p>
-        <div className="flex flex-wrap gap-3">
-          {actions.map((action) => (
-            <Link
-              key={action.href}
-              to={action.href}
-              className={buttonVariants({
-                variant: action.variant,
-                size: 'lg',
-                className: cn(actionClassNames[action.variant]),
-              })}
-            >
-              {action.label}
-            </Link>
-          ))}
-        </div>
+        {actions.length > 0 && (
+          <div className="flex flex-wrap gap-3">
+            {actions.map((action) => (
+              <Link
+                key={action.href}
+                to={action.href}
+                className={buttonVariants({
+                  variant: action.variant,
+                  size: 'lg',
+                  className: cn(actionClassNames[action.variant]),
+                })}
+              >
+                {action.label}
+              </Link>
+            ))}
+          </div>
+        )}
       </div>
 
       {image.credit && (

@@ -35,9 +35,16 @@ export function AuthProvider({ children }) {
     setUser(null)
   }, [])
 
+  // Saves profile changes and shows them everywhere the user appears (e.g. the account menu)
+  const updateProfile = useCallback(async (data) => {
+    const updated = await meApi.update(data)
+    setUser(updated)
+    return updated
+  }, [])
+
   const value = useMemo(
-    () => ({ user, loading, isAdmin: user?.role === 'admin', login, register, logout }),
-    [user, loading, login, register, logout]
+    () => ({ user, loading, isAdmin: user?.role === 'admin', login, register, logout, updateProfile }),
+    [user, loading, login, register, logout, updateProfile]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

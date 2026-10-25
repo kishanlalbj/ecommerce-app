@@ -88,6 +88,7 @@ export const books = pgTable(
   },
   (t) => [
     index("books_title_idx").on(t.title),
+    index("books_publisher_idx").on(t.publisherId),
     check("books_price_check", sql`${t.price} >= 0`),
     check("books_stock_check", sql`${t.stock} >= 0`),
     check("books_pages_check", sql`${t.pages} > 0`)
@@ -117,7 +118,11 @@ export const bookCategories = pgTable(
       .notNull()
       .references(() => categories.id, { onDelete: "cascade" })
   },
-  (t) => [primaryKey({ columns: [t.bookId, t.categoryId] })]
+  (t) => [
+    primaryKey({ columns: [t.bookId, t.categoryId] }),
+    // The primary key leads with book_id, so lookups by category need their own index
+    index("book_categories_category_idx").on(t.categoryId)
+  ]
 );
 
 // Customers

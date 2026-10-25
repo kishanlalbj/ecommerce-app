@@ -3,6 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { addresses, books, orderItems, orderStatus, orders } from "../db/schema.js";
+import { invalidateBooks } from "../lib/book-cache.js";
 import { badRequest, conflict, notFound } from "../lib/http-error.js";
 import { idParams } from "../lib/validation.js";
 import { authenticate, requireRole } from "../middleware/auth.js";
@@ -43,13 +44,13 @@ async function findOrder(req, tx = db) {
       ? eq(orders.id, req.params.id)
       : and(eq(orders.id, req.params.id), eq(orders.userId, req.user.id)),
     with: {
-      items: { with: { book: { columns: { id: true, title: true, isbn: true } } } },
+      items: { with: { book: { columns: { id: true, title: true, isbn: true, coverImageUrl: true } } } },
       shippingAddress: true
     }
   });
 }
 
-// Puts the ordered quantities back on the shelf
+// Puts the ordered quantities back on the shelf; returns the ids of the books it touched
 async function restock(tx, orderId) {
   const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
   for (const item of items) {
@@ -58,6 +59,7 @@ async function restock(tx, orderId) {
       .set({ stock: sql`${books.stock} + ${item.quantity}` })
       .where(eq(books.id, item.bookId));
   }
+  return items.map((item) => item.bookId);
 }
 
 export const ordersRouter = Router();
@@ -130,6 +132,10 @@ ordersRouter.post(
 
       return order.id;
     });
+    // Cached book pages and lists show stock, so every stock change clears them. This runs
+    // after the commit: clearing inside the transaction would let a concurrent read cache
+    // the old stock right back. Same for the cancel and status routes below.
+    await invalidateBooks(bookIds);
 
     req.params.id = orderId;
     res.status(201).json(await findOrder(req));
@@ -141,7 +147,7 @@ ordersRouter.get("/", async (req, res) => {
   const rows = await db.query.orders.findMany({
     where: isAdmin(req) ? undefined : eq(orders.userId, req.user.id),
     orderBy: desc(orders.createdAt),
-    with: { items: true }
+    with: { items: { with: { book: { columns: { id: true, title: true, coverImageUrl: true } } } } }
   });
   res.json(rows);
 });
@@ -158,7 +164,7 @@ ordersRouter.post(
   requireRole("customer"),
   validate({ params: idParams }),
   async (req, res) => {
-    await db.transaction(async (tx) => {
+    const restocked = await db.transaction(async (tx) => {
       // Conditional update, so two simultaneous cancels can't both restock
       const [cancelled] = await tx
         .update(orders)
@@ -176,8 +182,9 @@ ordersRouter.post(
         if (!(await findOrder(req, tx))) throw notFound("Order not found");
         throw conflict("Only pending orders can be cancelled");
       }
-      await restock(tx, cancelled.id);
+      return restock(tx, cancelled.id);
     });
+    await invalidateBooks(restocked);
     res.json(await findOrder(req));
   }
 );
@@ -189,7 +196,7 @@ ordersRouter.patch(
   validate({ params: idParams, body: statusSchema }),
   async (req, res) => {
     const { status } = req.body;
-    await db.transaction(async (tx) => {
+    const restocked = await db.transaction(async (tx) => {
       const [order] = await tx
         .select({ id: orders.id, status: orders.status })
         .from(orders)
@@ -201,8 +208,9 @@ ordersRouter.patch(
       }
 
       await tx.update(orders).set({ status }).where(eq(orders.id, order.id));
-      if (status === "cancelled") await restock(tx, order.id);
+      return status === "cancelled" ? restock(tx, order.id) : [];
     });
+    if (restocked.length) await invalidateBooks(restocked);
     res.json(await findOrder(req));
   }
 );
