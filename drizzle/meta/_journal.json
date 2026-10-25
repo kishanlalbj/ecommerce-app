@@ -15,6 +15,20 @@
       "when": 1792907640225,
       "tag": "0001_steep_bromley",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792915353922,
+      "tag": "0002_broad_dreaming_celestial",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792917848948,
+      "tag": "0003_superb_patriot",
+      "breakpoints": true
     }
   ]
 }

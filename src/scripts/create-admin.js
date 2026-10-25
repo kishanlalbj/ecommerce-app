@@ -3,7 +3,7 @@
 import { db, pool } from "../db/index.js";
 import { users } from "../db/schema.js";
 import { hashPassword } from "../lib/auth.js";
-import { email as emailSchema, password as passwordSchema } from "../lib/validation.js";
+import { email as emailSchema, password as passwordSchema } from "../schemas/common.js";
 
 const [rawEmail, rawPassword, name = "Store Admin"] = process.argv.slice(2);
 

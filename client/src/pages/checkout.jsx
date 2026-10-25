@@ -102,8 +102,18 @@ function CheckoutPage() {
     refresh()
   }, [refresh])
 
-  // Placing the order empties the cart; don't bounce to /cart on the way to the confirmation
-  if (placed) return null
+  // Placing the order empties the cart; don't bounce to /cart on the way to Stripe
+  if (placed) {
+    return (
+      <section
+        className="mx-auto flex min-h-128 max-w-7xl items-center justify-center gap-3 px-4 py-24 text-muted-foreground"
+        aria-live="polite"
+      >
+        <Spinner />
+        {copy.redirecting}
+      </section>
+    )
+  }
   if (items.length === 0) return <Navigate to={routes.cart} replace />
 
   function onAddressSaved(address) {
@@ -118,19 +128,29 @@ function CheckoutPage() {
   async function placeOrder() {
     setOrderError(null)
     setPlacing(true)
+    let order
     try {
-      const order = await ordersApi.place(
+      order = await ordersApi.place(
         items.map(({ bookId, quantity }) => ({ bookId, quantity })),
         Number(addressId)
       )
-      setPlaced(true)
-      navigate(routes.order(order.id), { replace: true, state: { order, justPlaced: true } })
-      clear()
     } catch (error) {
       // e.g. 409 "Only 2 left of …" when stock ran out after it was added to the cart
       setOrderError(toFormErrors(error).formError ?? siteConfig.auth.errors.generic)
       setPlacing(false)
       refresh()
+      return
+    }
+
+    // The order holds the books now, so the cart's job is done whatever happens with payment
+    setPlaced(true)
+    clear()
+    try {
+      const { url } = await ordersApi.pay(order.id)
+      window.location.assign(url)
+    } catch {
+      // The order page has a "Pay now" button to try again
+      navigate(routes.order(order.id), { replace: true, state: { order, paymentError: true } })
     }
   }
 

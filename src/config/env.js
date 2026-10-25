@@ -9,7 +9,12 @@ const schema = z.object({
   // Optional cache; the API works without it, just with more database load
   REDIS_URL: z.string().default("redis://localhost:6379"),
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
-  JWT_EXPIRES_IN: z.string().default("1d")
+  JWT_EXPIRES_IN: z.string().default("1d"),
+  STRIPE_SECRET_KEY: z.string().startsWith("sk_", "STRIPE_SECRET_KEY must be a Stripe secret key (sk_...)"),
+  STRIPE_WEBHOOK_SECRET: z.string().startsWith("whsec_", "STRIPE_WEBHOOK_SECRET must start with whsec_"),
+  // Where Stripe sends customers back to after checkout
+  CLIENT_URL: z.url().default("http://localhost:5173"),
+  CURRENCY: z.string().length(3).toLowerCase().default("usd")
 });
 
 const parsed = schema.safeParse(process.env);

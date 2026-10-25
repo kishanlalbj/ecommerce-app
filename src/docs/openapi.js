@@ -1,5 +1,5 @@
 // OpenAPI 3.1 description of the API, served as Swagger UI at /docs.
-// Keep in sync with the zod schemas in src/routes when endpoints change.
+// Keep in sync with the zod schemas in src/schemas when endpoints change.
 
 const id = { type: "integer", example: 1 };
 const timestamp = { type: "string", format: "date-time" };
@@ -77,7 +77,8 @@ export const openApiSpec = {
     { name: "Auth", description: "Sign up, log in, and get a token" },
     { name: "Books", description: "Browse the catalog (public); change it (admin)" },
     { name: "Me", description: "The logged-in user's profile and addresses" },
-    { name: "Orders", description: "Place, view, cancel and fulfil orders" }
+    { name: "Orders", description: "Place, view, pay for, cancel and fulfil orders" },
+    { name: "Payments", description: "Stripe webhooks" }
   ],
   components: {
     securitySchemes: {
@@ -226,6 +227,9 @@ export const openApiSpec = {
           status: ref("OrderStatus"),
           totalAmount: { type: "string", example: "19.98" },
           shippingAddressId: nullable({ type: "integer" }),
+          stripeSessionId: nullable({ type: "string", description: "Set once checkout has started" }),
+          stripePaymentIntentId: nullable({ type: "string", description: "Set when Stripe confirms payment" }),
+          paidAt: nullable(timestamp),
           createdAt: timestamp,
           updatedAt: timestamp,
           items: { type: "array", items: ref("OrderItem") }
@@ -515,7 +519,8 @@ export const openApiSpec = {
         summary: "Place an order (customer)",
         description: [
           "Prices are taken from the catalog, not the request. Stock is reserved immediately;",
-          "duplicate lines for the same book are merged. The order starts as `pending`."
+          "duplicate lines for the same book are merged. The order starts as `pending`;",
+          "call `POST /orders/{id}/pay` to collect payment."
         ].join(" "),
         security: bearer,
         requestBody: body({
@@ -559,14 +564,34 @@ export const openApiSpec = {
       post: {
         tags: ["Orders"],
         summary: "Cancel my pending order (customer)",
-        description: "Puts the stock back.",
+        description: "Puts the stock back and closes the order's Stripe Checkout session.",
         security: bearer,
         responses: {
           200: ok("Cancelled", ref("OrderDetail")),
           401: err("Not logged in"),
           403: err("Only customers use this endpoint"),
           404: err("Order not found"),
-          409: err("Only pending orders can be cancelled")
+          409: err("Only pending orders can be cancelled, or it was just paid")
+        }
+      }
+    },
+    "/orders/{id}/pay": {
+      parameters: [idParam],
+      post: {
+        tags: ["Orders"],
+        summary: "Start or resume payment for my pending order (customer)",
+        description: [
+          "Returns a Stripe Checkout URL to redirect the customer to, reusing the order's open session if it has one.",
+          "Sessions last 30 minutes; if unpaid by then the order is cancelled and its stock released.",
+          "After paying, Stripe sends the customer to `/orders/{id}?payment=success` on the client."
+        ].join(" "),
+        security: bearer,
+        responses: {
+          200: ok("Checkout URL", { type: "object", properties: { url: { type: "string", format: "uri" } } }),
+          401: err("Not logged in"),
+          403: err("Only customers use this endpoint"),
+          404: err("Order not found"),
+          409: err("Order isn't pending, is already paid, or its payment window has closed")
         }
       }
     },
@@ -577,7 +602,7 @@ export const openApiSpec = {
         summary: "Move an order through fulfilment (admin)",
         description: [
           "Allowed changes: `pending → paid | cancelled`, `paid → shipped | cancelled`, `shipped → delivered`.",
-          "Cancelling puts the stock back."
+          "Cancelling puts the stock back, and refunds the Stripe payment if the order was paid."
         ].join(" "),
         security: bearer,
         requestBody: body({ type: "object", required: ["status"], properties: { status: ref("OrderStatus") }, example: { status: "paid" } }),
@@ -589,6 +614,19 @@ export const openApiSpec = {
           404: err("Order not found"),
           409: err("That status change isn't allowed")
         }
+      }
+    },
+
+    "/payments/webhook": {
+      post: {
+        tags: ["Payments"],
+        summary: "Stripe webhook",
+        description: [
+          "Called by Stripe, not clients. Verified with the `Stripe-Signature` header.",
+          "`checkout.session.completed` / `async_payment_succeeded` mark the order paid;",
+          "`checkout.session.expired` / `async_payment_failed` cancel and restock it."
+        ].join(" "),
+        responses: { 200: { description: "Event handled or ignored" }, 400: err("Invalid Stripe signature") }
       }
     }
   }

@@ -8,9 +8,12 @@ import { authRouter } from "./routes/auth.js";
 import { booksRouter } from "./routes/books.js";
 import { meRouter } from "./routes/me.js";
 import { ordersRouter } from "./routes/orders.js";
+import { paymentsRouter } from "./routes/payments.js";
 
 export const app = express();
 app.use(requestLogger);
+// Before express.json(): webhook signatures are checked against the raw body
+app.use("/payments", paymentsRouter);
 app.use(express.json());
 
 app.get("/health", async (req, res) => {

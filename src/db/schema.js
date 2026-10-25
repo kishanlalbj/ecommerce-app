@@ -206,9 +206,17 @@ export const orders = pgTable(
       () => addresses.id,
       { onDelete: "set null" }
     ),
+    // One Stripe Checkout session per order; it expires (and the order is cancelled) if unpaid
+    stripeSessionId: varchar("stripe_session_id", { length: 255 }).unique(),
+    stripePaymentIntentId: varchar("stripe_payment_intent_id", { length: 255 }),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
     ...timestamps
   },
-  (t) => [index("orders_user_idx").on(t.userId)]
+  (t) => [
+    index("orders_user_idx").on(t.userId),
+    // The order sweeper's lookup: pending orders older than the checkout window
+    index("orders_status_created_idx").on(t.status, t.createdAt)
+  ]
 );
 
 export const orderItems = pgTable(

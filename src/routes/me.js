@@ -1,35 +1,13 @@
 import { and, asc, eq } from "drizzle-orm";
 import { Router } from "express";
-import { z } from "zod";
 import { db } from "../db/index.js";
 import { addresses, users } from "../db/schema.js";
 import { hashPassword, verifyPassword } from "../lib/auth.js";
 import { badRequest, notFound } from "../lib/http-error.js";
-import { email, idParams, partialUpdate, password } from "../lib/validation.js";
+import { idParams, partialUpdate } from "../schemas/common.js";
+import { addressSchema, passwordSchema, profileSchema } from "../schemas/me.js";
 import { authenticate, publicUserColumns } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
-
-const profileSchema = partialUpdate(
-  z.object({
-    name: z.string().trim().min(1).max(255),
-    email
-  })
-);
-
-const passwordSchema = z.object({
-  currentPassword: z.string().min(1),
-  newPassword: password
-});
-
-const addressSchema = z.object({
-  line1: z.string().trim().min(1).max(255),
-  line2: z.string().trim().max(255).nullish(),
-  city: z.string().trim().min(1).max(100),
-  state: z.string().trim().max(100).nullish(),
-  postalCode: z.string().trim().min(1).max(20),
-  country: z.string().trim().length(2, "Use a 2-letter country code").toUpperCase(),
-  isDefault: z.boolean().optional()
-});
 
 // Everything here acts on the logged-in user's own data only
 export const meRouter = Router();

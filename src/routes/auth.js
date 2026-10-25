@@ -1,24 +1,12 @@
 import { eq } from "drizzle-orm";
 import { Router } from "express";
-import { z } from "zod";
 import { db } from "../db/index.js";
 import { users } from "../db/schema.js";
 import { DUMMY_HASH, hashPassword, signToken, verifyPassword } from "../lib/auth.js";
 import { unauthorized } from "../lib/http-error.js";
 import { authenticate, publicUserColumns } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
-import { email, password } from "../lib/validation.js";
-
-const registerSchema = z.object({
-  email,
-  password,
-  name: z.string().trim().min(1).max(255)
-});
-
-const loginSchema = z.object({
-  email,
-  password: z.string().min(1)
-});
+import { loginSchema, registerSchema } from "../schemas/auth.js";
 
 export const authRouter = Router();
 

@@ -1,27 +1,16 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { Router } from "express";
-import { z } from "zod";
+import { env } from "../config/env.js";
 import { db } from "../db/index.js";
-import { addresses, books, orderItems, orderStatus, orders } from "../db/schema.js";
+import { addresses, books, orderItems, orders } from "../db/schema.js";
 import { invalidateBooks } from "../lib/book-cache.js";
 import { badRequest, conflict, notFound } from "../lib/http-error.js";
-import { idParams } from "../lib/validation.js";
+import { CHECKOUT_TTL_SECONDS, cancelAndRestock, fromCents, restock, toCents } from "../lib/orders.js";
+import { stripe } from "../lib/stripe.js";
+import { idParams } from "../schemas/common.js";
+import { createOrderSchema, statusSchema } from "../schemas/orders.js";
 import { authenticate, requireRole } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
-
-const createOrderSchema = z.object({
-  shippingAddressId: z.number().int().positive(),
-  items: z
-    .array(
-      z.object({
-        bookId: z.number().int().positive(),
-        quantity: z.number().int().min(1).max(100)
-      })
-    )
-    .min(1, "Order must contain at least one item")
-});
-
-const statusSchema = z.object({ status: z.enum(orderStatus.enumValues) });
 
 // Which status changes a store manager may make
 const NEXT_STATUSES = {
@@ -32,13 +21,10 @@ const NEXT_STATUSES = {
   cancelled: []
 };
 
-const toCents = (price) => Math.round(Number(price) * 100);
-const fromCents = (cents) => (cents / 100).toFixed(2);
-
 const isAdmin = (req) => req.user.role === "admin";
 
-async function findOrder(req, tx = db) {
-  return tx.query.orders.findFirst({
+async function findOrder(req) {
+  return db.query.orders.findFirst({
     // Customers can only ever see their own orders
     where: isAdmin(req)
       ? eq(orders.id, req.params.id)
@@ -50,16 +36,21 @@ async function findOrder(req, tx = db) {
   });
 }
 
-// Puts the ordered quantities back on the shelf; returns the ids of the books it touched
-async function restock(tx, orderId) {
-  const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
-  for (const item of items) {
-    await tx
-      .update(books)
-      .set({ stock: sql`${books.stock} + ${item.quantity}` })
-      .where(eq(books.id, item.bookId));
+// Closes an order's Stripe session so it can't be paid after we cancel the order.
+// Throws 409 if the customer already paid (the webhook just hasn't landed yet).
+async function closeCheckout(sessionId) {
+  let { status } = await stripe.checkout.sessions.retrieve(sessionId);
+  if (status === "open") {
+    try {
+      await stripe.checkout.sessions.expire(sessionId);
+      return;
+    } catch (error) {
+      // Paid between the two calls
+      ({ status } = await stripe.checkout.sessions.retrieve(sessionId));
+      if (status !== "complete") throw error;
+    }
   }
-  return items.map((item) => item.bookId);
+  if (status === "complete") throw conflict("This order has already been paid");
 }
 
 export const ordersRouter = Router();
@@ -158,6 +149,78 @@ ordersRouter.get("/:id", validate({ params: idParams }), async (req, res) => {
   res.json(order);
 });
 
+// Hands back a Stripe Checkout URL for a pending order, reusing the open session if there is one
+ordersRouter.post(
+  "/:id/pay",
+  requireRole("customer"),
+  validate({ params: idParams }),
+  async (req, res) => {
+    const url = await db.transaction(async (tx) => {
+      // Lock the row so two clicks on "Pay" can't open two sessions for one order
+      const [order] = await tx
+        .select({
+          id: orders.id,
+          status: orders.status,
+          stripeSessionId: orders.stripeSessionId,
+          createdAt: orders.createdAt
+        })
+        .from(orders)
+        .where(and(eq(orders.id, req.params.id), eq(orders.userId, req.user.id)))
+        .for("update");
+      if (!order) throw notFound("Order not found");
+      if (order.status !== "pending") throw conflict("Only pending orders can be paid");
+
+      if (order.stripeSessionId) {
+        const session = await stripe.checkout.sessions.retrieve(order.stripeSessionId);
+        if (session.status === "open") return session.url;
+        // The webhook will mark it paid or cancel it shortly
+        throw conflict(
+          session.status === "complete"
+            ? "This order has already been paid"
+            : "The payment window for this order has closed"
+        );
+      }
+
+      // A fresh session would hold the books another 30 minutes; the order sweeper is about to
+      // release them instead
+      if (Date.now() - order.createdAt.getTime() > CHECKOUT_TTL_SECONDS * 1000) {
+        throw conflict("The payment window for this order has closed");
+      }
+
+      // Charge the prices recorded on the order, not today's catalog prices
+      const items = await tx
+        .select({ quantity: orderItems.quantity, unitPrice: orderItems.unitPrice, title: books.title })
+        .from(orderItems)
+        .innerJoin(books, eq(orderItems.bookId, books.id))
+        .where(eq(orderItems.orderId, order.id));
+
+      const orderUrl = `${env.CLIENT_URL}/orders/${order.id}`;
+      // Payment methods (card, UPI, ...) are chosen in the Stripe Dashboard, not here
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        line_items: items.map((item) => ({
+          quantity: item.quantity,
+          price_data: {
+            currency: env.CURRENCY,
+            unit_amount: toCents(item.unitPrice),
+            product_data: { name: item.title }
+          }
+        })),
+        client_reference_id: String(order.id),
+        metadata: { orderId: String(order.id) },
+        customer_email: req.user.email,
+        expires_at: Math.floor(Date.now() / 1000) + CHECKOUT_TTL_SECONDS,
+        success_url: `${orderUrl}?payment=success`,
+        cancel_url: `${orderUrl}?payment=cancelled`
+      });
+
+      await tx.update(orders).set({ stripeSessionId: session.id }).where(eq(orders.id, order.id));
+      return session.url;
+    });
+    res.json({ url });
+  }
+);
+
 // A customer can cancel their own order while it's still pending
 ordersRouter.post(
   "/:id/cancel",
@@ -165,24 +228,17 @@ ordersRouter.post(
   validate({ params: idParams }),
   async (req, res) => {
     const restocked = await db.transaction(async (tx) => {
-      // Conditional update, so two simultaneous cancels can't both restock
-      const [cancelled] = await tx
-        .update(orders)
-        .set({ status: "cancelled" })
-        .where(
-          and(
-            eq(orders.id, req.params.id),
-            eq(orders.userId, req.user.id),
-            eq(orders.status, "pending")
-          )
-        )
-        .returning({ id: orders.id });
+      // Lock the row so a simultaneous cancel or pay can't interleave with this one
+      const [order] = await tx
+        .select({ id: orders.id, status: orders.status, stripeSessionId: orders.stripeSessionId })
+        .from(orders)
+        .where(and(eq(orders.id, req.params.id), eq(orders.userId, req.user.id)))
+        .for("update");
+      if (!order) throw notFound("Order not found");
+      if (order.status !== "pending") throw conflict("Only pending orders can be cancelled");
 
-      if (!cancelled) {
-        if (!(await findOrder(req, tx))) throw notFound("Order not found");
-        throw conflict("Only pending orders can be cancelled");
-      }
-      return restock(tx, cancelled.id);
+      if (order.stripeSessionId) await closeCheckout(order.stripeSessionId);
+      return cancelAndRestock(tx, order.id);
     });
     await invalidateBooks(restocked);
     res.json(await findOrder(req));
@@ -198,13 +254,32 @@ ordersRouter.patch(
     const { status } = req.body;
     const restocked = await db.transaction(async (tx) => {
       const [order] = await tx
-        .select({ id: orders.id, status: orders.status })
+        .select({
+          id: orders.id,
+          status: orders.status,
+          stripeSessionId: orders.stripeSessionId,
+          stripePaymentIntentId: orders.stripePaymentIntentId
+        })
         .from(orders)
         .where(eq(orders.id, req.params.id))
         .for("update");
       if (!order) throw notFound("Order not found");
       if (!NEXT_STATUSES[order.status].includes(status)) {
         throw conflict(`Can't change an order from ${order.status} to ${status}`);
+      }
+
+      if (status === "cancelled") {
+        if (order.status === "pending" && order.stripeSessionId) {
+          await closeCheckout(order.stripeSessionId);
+        }
+        // Orders marked paid by hand have no payment intent, so there's nothing to refund.
+        // If Stripe refuses the refund, the transaction rolls back and the order stays paid.
+        if (order.status === "paid" && order.stripePaymentIntentId) {
+          await stripe.refunds.create(
+            { payment_intent: order.stripePaymentIntentId },
+            { idempotencyKey: `order-${order.id}-refund` }
+          );
+        }
       }
 
       await tx.update(orders).set({ status }).where(eq(orders.id, order.id));
